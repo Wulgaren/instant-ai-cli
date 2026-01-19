@@ -1,10 +1,12 @@
 #!/bin/bash
 
 # Shell script to ask AI questions and get text responses using Gemini API
-# Usage: ./ask-ai.sh [-g|--grounding] "your question here"
+# Usage: ./ask-ai.sh [-g|--grounding] word1 word2 word3 ...
 #
 # Options:
 #   -g, --grounding    Enable Google Search grounding for real-time information
+#
+# Note: All words after the script name (except flags) will be combined into a single sentence
 #
 # Setup:
 #   Option 1 (Recommended): Store in macOS Keychain
@@ -50,7 +52,7 @@ fi
 
 # Parse arguments
 ENABLE_GROUNDING=false
-QUESTION=""
+QUESTION_PARTS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -59,27 +61,24 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
-            if [ -z "$QUESTION" ]; then
-                QUESTION="$1"
-            else
-                echo "Error: Multiple questions provided or unknown option: $1" >&2
-                echo "Usage: $0 [-g|--grounding] \"your question here\"" >&2
-                exit 1
-            fi
+            QUESTION_PARTS+=("$1")
             shift
             ;;
     esac
 done
 
+# Combine all question parts into a single sentence
+QUESTION="${QUESTION_PARTS[*]}"
+
 # Check if question is provided
 if [ -z "$QUESTION" ]; then
-    echo "Usage: $0 [-g|--grounding] \"your question here\"" >&2
+    echo "Usage: $0 [-g|--grounding] word1 word2 word3 ..." >&2
     echo "  -g, --grounding    Enable Google Search grounding for real-time information" >&2
     exit 1
 fi
 
 # System instructions for the AI
-SYSTEM_INSTRUCTION="You are a terminal CLI assistant. Provide concise, direct answers suitable for command-line output. Be brief and to the point. Format responses as plain text without markdown unless specifically requested. Focus on actionable information."
+SYSTEM_INSTRUCTION="You are a terminal CLI assistant. Provide concise, direct answers suitable for command-line output. Be brief and to the point. Format responses as plain text without markdown unless specifically requested. Focus on actionable information. Answer with detail if the reply is short."
 
 # Escape JSON special characters in the question and system instruction
 # Use Python if available for proper JSON encoding, otherwise use sed
@@ -102,11 +101,11 @@ payload = {
     }]
 }
 
-# Add grounding config if enabled
+# Add grounding via tools if enabled
 if enable_grounding:
-    payload["groundingConfig"] = {
-        "googleSearchRetrieval": {}
-    }
+    payload["tools"] = [{
+        "googleSearch": {}
+    }]
 
 print(json.dumps(payload))
 PYEOF
@@ -124,9 +123,9 @@ else
       "text": "${ESCAPED_INSTRUCTION}\n\nUser question: ${ESCAPED_QUESTION}"
     }]
   }],
-  "groundingConfig": {
-    "googleSearchRetrieval": {}
-  }
+  "tools": [{
+    "googleSearch": {}
+  }]
 }
 EOF
 )
@@ -149,7 +148,8 @@ MODEL="gemini-2.5-flash"
 API_VERSION="v1beta"
 
 # Make API request to Gemini
-RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/${API_VERSION}/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}" \
+API_URL="https://generativelanguage.googleapis.com/${API_VERSION}/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}"
+RESPONSE=$(curl -s -X POST "$API_URL" \
   -H "Content-Type: application/json" \
   -d "$JSON_PAYLOAD")
 
