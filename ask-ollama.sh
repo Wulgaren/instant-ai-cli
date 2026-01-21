@@ -14,7 +14,7 @@
 #   3. Make sure Ollama is running (it should start automatically)
 #   4. chmod +x ask-ollama.sh
 
-MODEL="qwen3:8b"
+MODEL="qwen3:4b"
 
 # Parse arguments
 ENABLE_WEB_SEARCH=false
