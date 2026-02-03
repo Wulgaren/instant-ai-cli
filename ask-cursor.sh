@@ -52,8 +52,12 @@ User question: ${QUESTION}"
 # Track accumulated output to avoid duplicates
 # Use a temp file to persist state across the pipe subshell
 TEMP_STATE=$(mktemp)
-trap "rm -f $TEMP_STATE" EXIT
+TEMP_THINKING=$(mktemp)
+trap "rm -f $TEMP_STATE $TEMP_THINKING" EXIT
 echo -n "" > "$TEMP_STATE"
+
+# Shown when content type is "thinking"; cleared when first text arrives
+THINKING_MSG="Thinking... "
 
 # Function to strip markdown formatting from text
 # Uses pandoc if available (best), otherwise uses sed-based stripping
@@ -119,8 +123,22 @@ process_line() {
             return
         fi
         
-        # Handle assistant messages with text content
+        # Handle assistant messages with text content or thinking indicator
         if [ "$type" = "assistant" ]; then
+            content_type=$(echo "$line" | jq -r '.message.content[0].type // "text"' 2>/dev/null)
+            if [ "$content_type" = "thinking" ]; then
+                # Show "Thinking... " once, then stay on same line until text arrives
+                if [ ! -s "$TEMP_THINKING" ]; then
+                    printf "%s\r" "$THINKING_MSG"
+                    echo -n "1" > "$TEMP_THINKING"
+                fi
+                return
+            fi
+            # Clear thinking indicator if it was shown, before outputting text
+            if [ -s "$TEMP_THINKING" ]; then
+                printf '\r%*s\r' ${#THINKING_MSG} ""
+                rm -f "$TEMP_THINKING"
+            fi
             # Extract text from message.content[0].text
             # The stream sends incremental deltas (new text only)
             content=$(echo "$line" | jq -r '.message.content[0].text // empty' 2>/dev/null)
@@ -156,10 +174,20 @@ process_line() {
         fi
     else
         # Fallback: extract text using sed/grep
-        # Look for assistant type with message.content structure
         if echo "$line" | grep -q '"type"\s*:\s*"assistant"'; then
+            # If this line is thinking content, show indicator and skip
+            if echo "$line" | grep -q '"type"\s*:\s*"thinking"'; then
+                if [ ! -s "$TEMP_THINKING" ]; then
+                    printf "%s\r" "$THINKING_MSG"
+                    echo -n "1" > "$TEMP_THINKING"
+                fi
+                return
+            fi
+            if [ -s "$TEMP_THINKING" ]; then
+                printf '\r%*s\r' ${#THINKING_MSG} ""
+                rm -f "$TEMP_THINKING"
+            fi
             # Try to extract text from message.content[0].text
-            # This is a simplified extraction - jq is recommended
             CONTENT=$(echo "$line" | sed -E 's/.*"text"\s*:\s*"(([^"\\]|\\.)*)".*/\1/' 2>/dev/null)
             
             if [ -n "$CONTENT" ] && [ "$CONTENT" != "$line" ]; then
@@ -197,15 +225,22 @@ process_line() {
 }
 
 # Process the stream with unbuffered output for real-time streaming
-# Use stdbuf if available to disable buffering
+# On Linux: stdbuf -oL -eL disables pipe buffering. On macOS (no stdbuf): use script -q to run agent with a pty so it line-buffers.
 if command -v stdbuf &> /dev/null; then
-    stdbuf -oL -eL agent -p --force --output-format stream-json --stream-partial-output "$FULL_PROMPT" 2>&1 | while IFS= read -r line; do
+    stdbuf -oL -eL agent --mode=ask -p --force --output-format stream-json --stream-partial-output "$FULL_PROMPT" 2>&1 | while IFS= read -r line; do
         process_line "$line"
     done
 else
-    agent -p --force --output-format stream-json --stream-partial-output "$FULL_PROMPT" 2>&1 | while IFS= read -r line; do
-        process_line "$line"
-    done
+    # macOS and others without stdbuf: run agent with a pty via script so stdout is line-buffered and stream appears in real time
+    if command -v script &> /dev/null; then
+        script -q /dev/null agent --mode=ask -p --force --output-format stream-json --stream-partial-output "$FULL_PROMPT" 2>/dev/null | while IFS= read -r line; do
+            process_line "$line"
+        done
+    else
+        agent --mode=ask -p --force --output-format stream-json --stream-partial-output "$FULL_PROMPT" 2>&1 | while IFS= read -r line; do
+            process_line "$line"
+        done
+    fi
 fi
 
 # Check exit status
